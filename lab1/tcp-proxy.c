@@ -91,6 +91,14 @@ void eventcb(struct bufferevent *bev, short events, void *ptr)
     } else if (events & BEV_EVENT_ERROR) {
         /* An error occured while connecting. */
         fprintf(stdout,"An error occured while connecting.\n");
+    } else if (events & BEV_EVENT_EOF) {
+        fprintf(stdout,"got eof\n");
+    } else if (events & BEV_EVENT_TIMEOUT) {
+        fprintf(stdout,"got timeout\n");
+    } else if (events & BEV_EVENT_WRITING) {
+        fprintf(stdout,"got event write\n");
+    } else if (events & BEV_EVENT_READING) {
+        fprintf(stdout,"got event reading\n");
     } else {
         fprintf(stdout,"some other error?\n");
     }
@@ -113,7 +121,9 @@ void accept_cb(evutil_socket_t fd, short what, void *base)
         struct bufferevent *sourcebev, *destbev;
         struct sockaddr_in destaddr;
         int connresult;
-        struct evdns_base *dns_base = evdns_base_new(b, 1);// temp greg stuff
+        struct evdns_base *dns_base;
+
+        dns_base = evdns_base_new(b);// temp greg stuff
 
 
         // stuff for dest
