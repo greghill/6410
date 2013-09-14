@@ -1,4 +1,4 @@
-#include <sys/types.h>
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -50,17 +50,63 @@ int hostname_to_ip(char *hostname , char *ip)
 	return 1;
 }
 
+void readcb(struct bufferevent *bev, void *ptr)
+{
+    char buf[1024];
+    int n;
+    struct evbuffer *input;
+    fprintf(stdout,"got read!!!\n");
+    /*
+    input = bufferevent_get_input(bev);
+    fprintf(stdout,"got read2!!!\n");
+    while ((n = evbuffer_remove(input, buf, sizeof(buf))) > 0) {
+        fwrite(buf, 1, n, stdout);
+        fprintf(stdout,"got something\n");
+    }
+    */
+}
+
+void eventcb(struct bufferevent *bev, short events, void *ptr)
+{
+    fprintf(stdout,"got event!\n");
+    if (events & BEV_EVENT_CONNECTED) {
+        /* We're connected to 127.0.0.1:8080.   Ordinarily we'd do
+           something here, like start reading or writing. */
+    } else if (events & BEV_EVENT_ERROR) {
+        /* An error occured while connecting. */
+    }
+}
+
 void accept_cb(evutil_socket_t fd, short what, void *base)
 {
 	//TODO: Implement me!!
+    struct event_base *b= base;
+    struct sockaddr_storage ss;
+    socklen_t slen = sizeof(ss);
+    int accepted = accept(fd, (struct sockaddr*)&ss, &slen);
+    fprintf(stdout,"got connection accepted %d\n", accepted);
+    if (accepted < 0) {
+        perror("accept");
+    } else if (accepted > FD_SETSIZE) {
+        fprintf(stdout,"closing!\n");
+        close(accepted);
+    } else {
+        struct bufferevent *bev;
+        evutil_make_socket_nonblocking(fd);
+        bev = bufferevent_socket_new(b, accepted, BEV_OPT_CLOSE_ON_FREE);// XXX check option
+        bufferevent_setcb(bev, readcb, NULL, eventcb, NULL);
+        bufferevent_setwatermark(bev, EV_READ, 0, MAX_CACHED);
+        bufferevent_enable(bev, EV_READ|EV_WRITE);
+        fprintf(stdout,"starting buffevent\n");
+    }
 }
-
 
 int main(int argc, char **argv)
 {
 	int socketlisten;
 	struct sockaddr_in addresslisten;
 	int reuse = 1;
+    fprintf(stdout,"Welcome to Greg's super-proxy!\n");
 
 	if(argc != 4)
 	{
@@ -116,6 +162,7 @@ int main(int argc, char **argv)
 	//Set some socket properties
 	setsockopt(socketlisten, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 	setnonblock(socketlisten);
+
 
 	//Add accept callback
 	struct event *accept_event = event_new(base, socketlisten, EV_READ | EV_PERSIST, accept_cb, base);
