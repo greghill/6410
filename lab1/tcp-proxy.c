@@ -92,7 +92,11 @@ void eventcb(struct bufferevent *bev, short events, void *ptr)
         /* An error occured while connecting. */
         fprintf(stdout,"An error occured while connecting.\n");
     } else if (events & BEV_EVENT_EOF) {
-        fprintf(stdout,"got eof\n");
+        struct bufferevent * otherside = (struct bufferevent *) ptr;
+        int flushres = bufferevent_flush(otherside, EV_WRITE, BEV_FLUSH);
+        evutil_socket_t fd = bufferevent_getfd(otherside); // send shutdown to other side
+        int shutdownresult = shutdown(fd, 1);
+        fprintf(stdout,"got eof flush result %d, fd %d, shutdown %d\n", flushres, fd, shutdownresult);
     } else if (events & BEV_EVENT_TIMEOUT) {
         fprintf(stdout,"got timeout\n");
     } else if (events & BEV_EVENT_WRITING) {
