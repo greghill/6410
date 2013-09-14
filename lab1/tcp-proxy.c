@@ -13,6 +13,8 @@
 
 unsigned int daddr;
 unsigned short dport;
+const char * addr2;
+int port2;
 
 //Sets a socket descriptor to nonblocking mode
 void setnonblock(int fd)
@@ -49,31 +51,48 @@ int hostname_to_ip(char *hostname , char *ip)
 
 	return 1;
 }
+void writecb(struct bufferevent *bev, void *ptr)
+{
+    fprintf(stdout,"got write!!! on %p\n", bev);
+}
 
 void readcb(struct bufferevent *bev, void *ptr)
 {
     char buf[1024];
-    int n;
-    struct evbuffer *input;
-    fprintf(stdout,"got read!!!\n");
-    /*
+    //int n;
+    size_t n;
+    struct evbuffer *input, *output;
+    struct bufferevent *otherbev = (struct bufferevent *) ptr;
+    char * line;
+    fprintf(stdout,"got read!!! on %p, want to write to %p\n", bev, otherbev);
     input = bufferevent_get_input(bev);
-    fprintf(stdout,"got read2!!!\n");
+    output = bufferevent_get_output(otherbev);
+    /*
     while ((n = evbuffer_remove(input, buf, sizeof(buf))) > 0) {
         fwrite(buf, 1, n, stdout);
-        fprintf(stdout,"got something\n");
+        evbuffer_add_printf(output, "zaaa: \n");
     }
     */
+    while ((line = evbuffer_readln(input, &n, EVBUFFER_EOL_LF))) {
+        evbuffer_add(output, line, n);
+        evbuffer_add(output, "\n", 1);
+        fprintf(stdout,"copying line to buffer\n");
+        free(line);
+    }
 }
 
 void eventcb(struct bufferevent *bev, short events, void *ptr)
 {
-    fprintf(stdout,"got event!\n");
+    fprintf(stdout,"got event! from bev %p\n", bev);
     if (events & BEV_EVENT_CONNECTED) {
         /* We're connected to 127.0.0.1:8080.   Ordinarily we'd do
            something here, like start reading or writing. */
+        fprintf(stdout,"we connected******)()()()()()(\n");
     } else if (events & BEV_EVENT_ERROR) {
         /* An error occured while connecting. */
+        fprintf(stdout,"An error occured while connecting.\n");
+    } else {
+        fprintf(stdout,"some other error?\n");
     }
 }
 
@@ -91,13 +110,36 @@ void accept_cb(evutil_socket_t fd, short what, void *base)
         fprintf(stdout,"closing!\n");
         close(accepted);
     } else {
-        struct bufferevent *bev;
-        evutil_make_socket_nonblocking(fd);
-        bev = bufferevent_socket_new(b, accepted, BEV_OPT_CLOSE_ON_FREE);// XXX check option
-        bufferevent_setcb(bev, readcb, NULL, eventcb, NULL);
-        bufferevent_setwatermark(bev, EV_READ, 0, MAX_CACHED);
-        bufferevent_enable(bev, EV_READ|EV_WRITE);
+        struct bufferevent *sourcebev, *destbev;
+        struct sockaddr_in destaddr;
+        int connresult;
+        struct evdns_base *dns_base = evdns_base_new(b, 1);// temp greg stuff
+
+
+        // stuff for dest
+        destbev = bufferevent_socket_new(b, -1, BEV_OPT_CLOSE_ON_FREE);// XXX check option
+        /*
+        memset(&destaddr, 0, sizeof(destaddr));
+        destaddr.sin_family = AF_INET;
+        destaddr.sin_addr.s_addr = daddr;
+        destaddr.sin_port = dport;
+        */
+        // stuff for source
+        evutil_make_socket_nonblocking(accepted);
+        sourcebev = bufferevent_socket_new(b, accepted, BEV_OPT_CLOSE_ON_FREE);// XXX check option
+        //stuff for dest2;
+        bufferevent_setcb(destbev, readcb, writecb, eventcb, sourcebev);
+        bufferevent_setwatermark(sourcebev, EV_READ|EV_WRITE, 0, MAX_CACHED);
+        bufferevent_enable(destbev, EV_READ|EV_WRITE);
+        // stuff for source2
+        bufferevent_setcb(sourcebev, readcb, writecb, eventcb, destbev);
+        bufferevent_setwatermark(sourcebev, EV_READ|EV_WRITE, 0, MAX_CACHED);
+        bufferevent_enable(sourcebev, EV_READ|EV_WRITE);
         fprintf(stdout,"starting buffevent\n");
+        // make connection to destination of proxy and add
+        //connresult = bufferevent_socket_connect(destbev, (struct sockaddr *)&destaddr, sizeof(destaddr));
+        connresult = bufferevent_socket_connect_hostname(destbev, dns_base, AF_UNSPEC, addr2, port2);
+        fprintf(stdout,"dest connect result %d\n", connresult);
     }
 }
 
@@ -113,7 +155,7 @@ int main(int argc, char **argv)
 		printf("Usage: %s destination-host destination-port listening-port\n", argv[0]);
 		return 0;
 	}
-
+    addr2 = argv[1];
 	daddr = inet_addr(argv[1]);
 
 	if(daddr == INADDR_NONE)
@@ -124,6 +166,7 @@ int main(int argc, char **argv)
 	}
 
 	dport = atoi(argv[2]);
+	port2 = atoi(argv[2]);
 
 	event_init();
 	struct event_base *base = event_base_new();
