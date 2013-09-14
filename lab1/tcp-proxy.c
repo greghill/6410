@@ -123,7 +123,7 @@ void accept_cb(evutil_socket_t fd, short what, void *base)
         int connresult;
         struct evdns_base *dns_base;
 
-        dns_base = evdns_base_new(b);// temp greg stuff
+        dns_base = evdns_base_new(b, 1);// temp greg stuff
 
 
         // stuff for dest
