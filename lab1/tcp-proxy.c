@@ -51,34 +51,15 @@ int hostname_to_ip(char *hostname , char *ip)
 
 	return 1;
 }
-void writecb(struct bufferevent *bev, void *ptr)
-{
-    fprintf(stdout,"got write!!! on %p\n", bev);
-}
 
 void readcb(struct bufferevent *bev, void *ptr)
 {
-    char buf[1024];
-    //int n;
-    size_t n;
     struct evbuffer *input, *output;
     struct bufferevent *otherbev = (struct bufferevent *) ptr;
-    char * line;
-    fprintf(stdout,"got read!!! on %p, want to write to %p\n", bev, otherbev);
     input = bufferevent_get_input(bev);
     output = bufferevent_get_output(otherbev);
-    /*
-    while ((n = evbuffer_remove(input, buf, sizeof(buf))) > 0) {
-        fwrite(buf, 1, n, stdout);
-        evbuffer_add_printf(output, "zaaa: \n");
-    }
-    */
-    while ((line = evbuffer_readln(input, &n, EVBUFFER_EOL_LF))) {
-        evbuffer_add(output, line, n);
-        evbuffer_add(output, "\n", 1);
-        fprintf(stdout,"copying line to buffer\n");
-        free(line);
-    }
+    int res = evbuffer_add_buffer(output, input);
+    fprintf(stdout,"copying between buffers %d\n", res);
 }
 
 void eventcb(struct bufferevent *bev, short events, void *ptr)
@@ -93,10 +74,10 @@ void eventcb(struct bufferevent *bev, short events, void *ptr)
         fprintf(stdout,"An error occured while connecting.\n");
     } else if (events & BEV_EVENT_EOF) {
         struct bufferevent * otherside = (struct bufferevent *) ptr;
-        int flushres = bufferevent_flush(otherside, EV_WRITE, BEV_FLUSH);
+        int flushres = bufferevent_flush(otherside, EV_WRITE, BEV_FINISHED);
         evutil_socket_t fd = bufferevent_getfd(otherside); // send shutdown to other side
-        int shutdownresult = shutdown(fd, 1);
-        fprintf(stdout,"got eof flush result %d, fd %d, shutdown %d\n", flushres, fd, shutdownresult);
+        fprintf(stdout,"got eof flush result %d, fd %d\n", flushres, fd);
+        //fprintf(stdout,"got eof %d\n", flushres);
     } else if (events & BEV_EVENT_TIMEOUT) {
         fprintf(stdout,"got timeout\n");
     } else if (events & BEV_EVENT_WRITING) {
@@ -110,7 +91,6 @@ void eventcb(struct bufferevent *bev, short events, void *ptr)
 
 void accept_cb(evutil_socket_t fd, short what, void *base)
 {
-	//TODO: Implement me!!
     struct event_base *b= base;
     struct sockaddr_storage ss;
     socklen_t slen = sizeof(ss);
@@ -131,27 +111,20 @@ void accept_cb(evutil_socket_t fd, short what, void *base)
 
 
         // stuff for dest
-        destbev = bufferevent_socket_new(b, -1, BEV_OPT_CLOSE_ON_FREE);// XXX check option
-        /*
-        memset(&destaddr, 0, sizeof(destaddr));
-        destaddr.sin_family = AF_INET;
-        destaddr.sin_addr.s_addr = daddr;
-        destaddr.sin_port = dport;
-        */
+        destbev = bufferevent_socket_new(b, -1, BEV_OPT_CLOSE_ON_FREE);
         // stuff for source
         evutil_make_socket_nonblocking(accepted);
-        sourcebev = bufferevent_socket_new(b, accepted, BEV_OPT_CLOSE_ON_FREE);// XXX check option
+        sourcebev = bufferevent_socket_new(b, accepted, BEV_OPT_CLOSE_ON_FREE);
         //stuff for dest2;
-        bufferevent_setcb(destbev, readcb, writecb, eventcb, sourcebev);
+        bufferevent_setcb(destbev, readcb, NULL, eventcb, sourcebev);
         bufferevent_setwatermark(sourcebev, EV_READ|EV_WRITE, 0, MAX_CACHED);
         bufferevent_enable(destbev, EV_READ|EV_WRITE);
         // stuff for source2
-        bufferevent_setcb(sourcebev, readcb, writecb, eventcb, destbev);
+        bufferevent_setcb(sourcebev, readcb, NULL, eventcb, destbev);
         bufferevent_setwatermark(sourcebev, EV_READ|EV_WRITE, 0, MAX_CACHED);
         bufferevent_enable(sourcebev, EV_READ|EV_WRITE);
         fprintf(stdout,"starting buffevent\n");
         // make connection to destination of proxy and add
-        //connresult = bufferevent_socket_connect(destbev, (struct sockaddr *)&destaddr, sizeof(destaddr));
         connresult = bufferevent_socket_connect_hostname(destbev, dns_base, AF_UNSPEC, addr2, port2);
         fprintf(stdout,"dest connect result %d\n", connresult);
     }
@@ -170,6 +143,7 @@ int main(int argc, char **argv)
 		return 0;
 	}
     addr2 = argv[1];
+    /*
 	daddr = inet_addr(argv[1]);
 
 	if(daddr == INADDR_NONE)
@@ -180,6 +154,7 @@ int main(int argc, char **argv)
 	}
 
 	dport = atoi(argv[2]);
+    */
 	port2 = atoi(argv[2]);
 
 	event_init();

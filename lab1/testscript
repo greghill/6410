@@ -1,0 +1,1 @@
+curl localhost:1234/courses/2013fa/cs6410/labs/big > /dev/null & curl localhost:1234/courses/2013fa/cs6410/labs/small
