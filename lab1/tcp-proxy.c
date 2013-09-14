@@ -163,7 +163,6 @@ int main(int argc, char **argv)
 	setsockopt(socketlisten, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 	setnonblock(socketlisten);
 
-
 	//Add accept callback
 	struct event *accept_event = event_new(base, socketlisten, EV_READ | EV_PERSIST, accept_cb, base);
 	event_add(accept_event, NULL);
