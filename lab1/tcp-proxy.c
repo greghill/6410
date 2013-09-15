@@ -17,9 +17,13 @@ const char * addr2;
 int port2;
 
 struct proxy {
-    struct evbuffer *input, *output;
+    struct bufferevent *input, *output;
     int inputDone, outputDone;
 };
+
+inline struct bufferevent *getOtherSide(struct bufferevent *bev, struct proxy *proxy) {
+    return proxy->input == bev ? proxy->output : proxy->input;
+}
 
 //Sets a socket descriptor to nonblocking mode
 void setnonblock(int fd)
@@ -60,9 +64,9 @@ int hostname_to_ip(char *hostname , char *ip)
 void readcb(struct bufferevent *bev, void *ptr)
 {
     struct evbuffer *input, *output;
-    struct bufferevent *otherbev = (struct bufferevent *) ptr;
+    struct bufferevent * otherside = getOtherSide(bev, (struct proxy *) ptr);
     input = bufferevent_get_input(bev);
-    output = bufferevent_get_output(otherbev);
+    output = bufferevent_get_output(otherside);
     int res = evbuffer_add_buffer(output, input);
     fprintf(stdout,"copying between buffers %d\n", res);
 }
@@ -78,7 +82,8 @@ void eventcb(struct bufferevent *bev, short events, void *ptr)
         /* An error occured while connecting. */
         fprintf(stdout,"An error occured while connecting.\n");
     } else if (events & BEV_EVENT_EOF) {
-        struct bufferevent * otherside = (struct bufferevent *) ptr;
+        struct bufferevent * otherside = getOtherSide(bev, (struct proxy *) ptr);
+
         int flushres = bufferevent_flush(otherside, EV_WRITE, BEV_FINISHED);
         evutil_socket_t fd = bufferevent_getfd(otherside); // send shutdown to other side
         fprintf(stdout,"got eof flush result %d, fd %d\n", flushres, fd);
@@ -107,30 +112,32 @@ void accept_cb(evutil_socket_t fd, short what, void *base)
         fprintf(stdout,"closing!\n");
         close(accepted);
     } else {
-        struct bufferevent *sourcebev, *destbev;
         struct sockaddr_in destaddr;
         int connresult;
         struct evdns_base *dns_base;
+        struct proxy *newProxy = (struct proxy *) malloc(sizeof(struct proxy));
+        newProxy->inputDone = 0;
+        newProxy->outputDone = 0;
 
         dns_base = evdns_base_new(b, 1);// temp greg stuff
 
 
         // stuff for dest
-        destbev = bufferevent_socket_new(b, -1, BEV_OPT_CLOSE_ON_FREE);
+        newProxy->output = bufferevent_socket_new(b, -1, BEV_OPT_CLOSE_ON_FREE);
         // stuff for source
         evutil_make_socket_nonblocking(accepted);
-        sourcebev = bufferevent_socket_new(b, accepted, BEV_OPT_CLOSE_ON_FREE);
+        newProxy->input = bufferevent_socket_new(b, accepted, BEV_OPT_CLOSE_ON_FREE);
         //stuff for dest2;
-        bufferevent_setcb(destbev, readcb, NULL, eventcb, sourcebev);
-        bufferevent_setwatermark(sourcebev, EV_READ|EV_WRITE, 0, MAX_CACHED);
-        bufferevent_enable(destbev, EV_READ|EV_WRITE);
+        bufferevent_setcb(newProxy->output, readcb, NULL, eventcb, newProxy);
+        bufferevent_setwatermark(newProxy->output, EV_READ|EV_WRITE, 0, MAX_CACHED);
+        bufferevent_enable(newProxy->output, EV_READ|EV_WRITE);
         // stuff for source2
-        bufferevent_setcb(sourcebev, readcb, NULL, eventcb, destbev);
-        bufferevent_setwatermark(sourcebev, EV_READ|EV_WRITE, 0, MAX_CACHED);
-        bufferevent_enable(sourcebev, EV_READ|EV_WRITE);
+        bufferevent_setcb(newProxy->input, readcb, NULL, eventcb, newProxy);
+        bufferevent_setwatermark(newProxy->input, EV_READ|EV_WRITE, 0, MAX_CACHED);
+        bufferevent_enable(newProxy->input, EV_READ|EV_WRITE);
         fprintf(stdout,"starting buffevent\n");
         // make connection to destination of proxy and add
-        connresult = bufferevent_socket_connect_hostname(destbev, dns_base, AF_UNSPEC, addr2, port2);
+        connresult = bufferevent_socket_connect_hostname(newProxy->output, dns_base, AF_UNSPEC, addr2, port2);
         fprintf(stdout,"dest connect result %d\n", connresult);
     }
 }
