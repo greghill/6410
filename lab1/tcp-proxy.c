@@ -16,6 +16,11 @@ unsigned short dport;
 const char * addr2;
 int port2;
 
+struct proxy {
+    struct evbuffer *input, *output;
+    int inputDone, outputDone;
+};
+
 //Sets a socket descriptor to nonblocking mode
 void setnonblock(int fd)
 {
