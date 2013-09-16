@@ -82,18 +82,15 @@ void readcb(struct bufferevent *bev, void *ptr)
     input = bufferevent_get_input(bev);
     output = bufferevent_get_output(otherside);
     int res = evbuffer_add_buffer(output, input);
-    fprintf(stdout,"copying between buffers %d\n", res);
+    //fprintf(stdout,"copying between buffers %d\n", res);
 }
 
 void eventcb(struct bufferevent *bev, short events, void *ptr)
 {
     fprintf(stdout,"got event! from bev %p\n", bev);
     if (events & BEV_EVENT_CONNECTED) {
-        /* We're connected to 127.0.0.1:8080.   Ordinarily we'd do
-           something here, like start reading or writing. */
-        fprintf(stdout,"we connected******)()()()()()(\n");
+        fprintf(stdout,"Connection Established\n");
     } else if (events & BEV_EVENT_ERROR) {
-        /* An error occured while connecting. */
         fprintf(stdout,"An error occured while connecting.\n");
     } else if (events & BEV_EVENT_EOF) {
         struct bufferevent * otherside = getOtherSide(bev, (struct proxy *) ptr);
@@ -105,8 +102,7 @@ void eventcb(struct bufferevent *bev, short events, void *ptr)
             bufferevent_free(otherside);
             free(ptr); // free proxy struct
         }
-        fprintf(stdout,"got eof flush result %d\n", flushres);
-        //fprintf(stdout,"got eof %d\n", flushres);
+        //fprintf(stdout,"got eof flush result %d\n", flushres);
     } else if (events & BEV_EVENT_TIMEOUT) {
         fprintf(stdout,"got timeout\n");
     } else if (events & BEV_EVENT_WRITING) {
@@ -124,7 +120,7 @@ void accept_cb(evutil_socket_t fd, short what, void *base)
     struct sockaddr_storage ss;
     socklen_t slen = sizeof(ss);
     int accepted = accept(fd, (struct sockaddr*)&ss, &slen);
-    fprintf(stdout,"got connection accepted %d\n", accepted);
+    //fprintf(stdout,"got connection accepted %d\n", accepted);
     if (accepted < 0) {
         perror("accept");
     } else if (accepted > FD_SETSIZE) {
@@ -138,8 +134,7 @@ void accept_cb(evutil_socket_t fd, short what, void *base)
         newProxy->inputDone = 0;
         newProxy->outputDone = 0;
 
-        dns_base = evdns_base_new(b, 1);// temp greg stuff
-
+        dns_base = evdns_base_new(b, 1);
 
         // stuff for dest
         newProxy->output = bufferevent_socket_new(b, -1, BEV_OPT_CLOSE_ON_FREE);
@@ -154,10 +149,9 @@ void accept_cb(evutil_socket_t fd, short what, void *base)
         bufferevent_setcb(newProxy->input, readcb, NULL, eventcb, newProxy);
         bufferevent_setwatermark(newProxy->input, EV_READ|EV_WRITE, 0, MAX_CACHED);
         bufferevent_enable(newProxy->input, EV_READ|EV_WRITE);
-        fprintf(stdout,"starting buffevent\n");
         // make connection to destination of proxy and add
         connresult = bufferevent_socket_connect_hostname(newProxy->output, dns_base, AF_UNSPEC, addr2, port2);
-        fprintf(stdout,"dest connect result %d\n", connresult);
+        //fprintf(stdout,"dest connect result %d\n", connresult);
     }
 }
 
@@ -166,7 +160,7 @@ int main(int argc, char **argv)
 	int socketlisten;
 	struct sockaddr_in addresslisten;
 	int reuse = 1;
-    fprintf(stdout,"Welcome to Greg's super-proxy!\n");
+    fprintf(stdout,"Welcome to Greg's super proxy!\n");
 
 	if(argc != 4)
 	{
