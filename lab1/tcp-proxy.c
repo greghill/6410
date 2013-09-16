@@ -25,6 +25,20 @@ inline struct bufferevent *getOtherSide(struct bufferevent *bev, struct proxy *p
     return proxy->input == bev ? proxy->output : proxy->input;
 }
 
+// returns true if both are done
+inline int markFinished(struct bufferevent *bev, struct proxy *proxy) {
+    if (proxy->input == bev)
+        proxy->inputDone = 1;
+    else
+        proxy->outputDone = 1;
+    
+    return proxy->inputDone && proxy->outputDone;
+}
+
+inline int isInputSide(struct bufferevent *bev, struct proxy *proxy) {
+    return proxy->input == bev;
+}
+
 //Sets a socket descriptor to nonblocking mode
 void setnonblock(int fd)
 {
@@ -85,8 +99,13 @@ void eventcb(struct bufferevent *bev, short events, void *ptr)
         struct bufferevent * otherside = getOtherSide(bev, (struct proxy *) ptr);
 
         int flushres = bufferevent_flush(otherside, EV_WRITE, BEV_FINISHED);
-        evutil_socket_t fd = bufferevent_getfd(otherside); // send shutdown to other side
-        fprintf(stdout,"got eof flush result %d, fd %d\n", flushres, fd);
+        if (markFinished(bev, (struct proxy *) ptr)) {
+            // if both are done free stuff
+            bufferevent_free(bev);
+            bufferevent_free(otherside);
+            free(ptr); // free proxy struct
+        }
+        fprintf(stdout,"got eof flush result %d\n", flushres);
         //fprintf(stdout,"got eof %d\n", flushres);
     } else if (events & BEV_EVENT_TIMEOUT) {
         fprintf(stdout,"got timeout\n");
