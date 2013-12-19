@@ -348,8 +348,9 @@ For a reapeated destination the advantage of caching is especially significant, 
 
 \insertfig{1.1}{fig/bench1}{Distributed reachability benchmark on Twitter graph}{huh}
 
-\section{Conclusion and Future Directions}\label{sec:conclusion}
-We have built and demonstrated a powerful caching system that can halve computation time on real world graphs while allowing users to maintain ACID consistency for their queries.
+\section{Conclusion}\label{sec:conclusion}
+The inter-connectiveness of graph data and queries make impossible to use basic caching techniques. Because of this, the budding space of distributed graph stores has not yet tried to implement request caching. We have built and demonstrated a powerful caching system that can halve computation time on workloads in real world graphs while allowing users to maintain ACID consistency for their queries while they update the graph. Though node programs with caching can require extra thinking for their creators, we believe future graph systems where performance is critical should consider implementing a similar scheme. The concept of \emph{lazy cache invalidation} is also a takeaway: in a system where cache values hit infrequently but save a huge amount of computation when they do, taking invalidation out of the common path can be a wise choice.
+\section{Future Directions}
 
 Moving forward, we would also like to design and implement one or two other applications for node programs with caching in our system.
 A top contender currently would be a program that would do a basic friend recommendation algorithm which would rank the two-hop neighbors of a given node by the number of neighbors they share with it.
