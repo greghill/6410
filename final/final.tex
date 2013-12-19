@@ -90,15 +90,15 @@ With a static graph, these results can be trivially be cached on either the serv
 %    With a static graph, caching can be done on the client side. % titan does this
 %If they want the result of an identical calculation twice there is no worry for correctness or fancy caching techniques.
 %Even for dynamic graphs, no other graph database does caching of requests and usually focuses on caching parts of the graph.
-
-
 Though we wanted to keep a single, consistent view of the graph, we still saw room for caching to improve performance for queries to a dynamic graph. Usually, changes that are made between requests do not invalidate old cache values, so being able to return without re-running the full computation could greatly improve performance.
 In addition, even if a cached query result is incorrect, it is likely most of the graph structure is the same between the requests, and we saw the potential to save parts of old computations in some query types.
 
-    In this paper we propose a system to provide functionality for caching between requests to a dynamically changing graph in a way that maintains correctness and provides the opportunity for optimizations even when the cached result is no longer valid.
+In the following text we propose and evaluate a system to provide functionality for caching between requests to a dynamically changing graph in a way that maintains correctness and provides the opportunity for optimizations even when the cached result is no longer valid.
 A simple graph query example, ``is node $v$ reachable from node $u$", would benefit greatly from caching.
 Without caching, this request requires a breadth or depth first search of the graph.
 If we cached the path at the source for a destination node that was reachable, checking if this path still exists for a later query could potentially avoid this large search and save a significant amount of time (while maintaining correctness because we re-check the path).
+Maintaining consistency of this result proves difficult, as simply invalidating on a change $u$ or $v$ is not sufficient because the path could be broken at any point.
+For a negative reachability caching becomes almost impossible in a large graph: any node that is reachable from $u$ adding an edge could potentially connect the two nodes.
 Weaver has a programming framework for developers to define their own queries on the graph, and we wanted to expose a flexible caching API that was sufficiently generic to perform well even for use cases yet to be developed.
 
 In our caching system, query can store a cached value at a node (or multiple nodes) before it returns to the client. However, with this cached value, a custom user defined class, the query must also specify a \emph{watch set} of nodes for that cached value.
