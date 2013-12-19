@@ -65,7 +65,7 @@ but caching in a way that is flexible yet maintains consistency prevents a basic
 %It is built for a dynamically changing graph, where user specified queries can run on a consistent snapshot of the graph while it is updating.
 In this paper, we propose a system and interface for caching graph query results in software where cached values can be re-interpreted with the context of relevant changes that have happened to the graph between requests.
 This forces query creators to check if a cached value is still valid, but allows them to implement more complex functionality such as incrementally re-computing a result from this supplied context.
-Implemented in weaver, we our system halved the time to complete certain workloads on a real world graph. % XXX check
+Implemented in weaver, we our system more than halved the time to complete certain workloads on a real world graph. % XXX check
 \end{abstract}
 
 \section{Introduction}\label{sec:intro}
