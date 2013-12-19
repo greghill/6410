@@ -1,0 +1,172 @@
+\documentclass[letterpaper,twocolumn,11pt,tight]{article}
+%\usepackage{usenix}
+\usepackage{usenix_orig}
+
+\usepackage{verbatim,alltt,amsmath}
+\usepackage{graphics,graphicx,color}
+\usepackage{algorithmic,algorithm}
+\usepackage{listings,color,xcolor}
+\usepackage{times}
+%\usepackage[compact]{titlesec} % tighten up whitespace
+\usepackage{amsthm}
+\usepackage{caption,subcaption}
+\usepackage{listings}
+\lstdefinestyle{customc}{
+    belowcaptionskip=1\baselineskip,
+    breaklines=true,
+    %frame=L,
+    xleftmargin=\parindent,
+    language=C,
+    showstringspaces=false,
+    basicstyle=\footnotesize\ttfamily,
+    keywordstyle=\bfseries\color{green!40!black},
+    commentstyle=\itshape\color{purple!40!black},
+    identifierstyle=\color{blue},
+    stringstyle=\color{orange},
+    morekeywords={string,uint64_t,std}
+}
+\lstset{escapechar=@,style=customc}
+
+\begin{document}
+\newtheorem{claim}{Claim}
+\newtheorem{defn}{Definition}
+\newcommand{\hilight}[1]{\colorbox{yellow}{#1}}
+\newcommand{\secref}[1]{Section~\ref{sec:#1}}
+\newcommand{\figref}[1]{Figure~\ref{fig:#1}}
+\newcommand{\srcref}[1]{Figure~\ref{fig:#1}}
+\newcommand{\clmref}[1]{Claim~\ref{claim:#1}}
+% insertfig is a custom command to avoid repetitive code for including figures
+% it takes 4 arguments:
+% 1. figure width
+% 2. file name of the figure
+% 3. caption
+% 4. label -- note that actual label will be fig:<arg4>
+\newcommand{\insertfig}[4]{\begin{figure}\centering\includegraphics[width=#1\linewidth]{#2}\caption{#3}\label{fig:#4}\end{figure}}
+% args: same as insertfig, sans width
+\newcommand{\insertsrc}[3]{\begin{figure}\centering\lstinputlisting[frame=single]{#1}\caption{#2}\label{fig:#3}\end{figure}}
+%\newcommand{\insertsrc}[3]{\begin{figure}\centering\hline\lstinputlisting{#1}\hline\caption{#2}\label{fig:#3}\end{figure}}
+
+\title{Traversal Caching in a Distributed Graph Store}
+
+\author{\rm Gregory D. Hill \qquad
+        \\Cornell University}
+
+\maketitle
+\begin{abstract}
+Much of todays `Big Data' is graph structured, and multiple companies and universities have introduced graph storage systems optimized to store and process this information.
+%Graph storage systems Ojk
+%Graphs have become ubiquitous in the Information Age.
+%With them, graph storage systems optimized for their highly inter-connected structure.
+Weaver is a distributed graph store being developed at Cornell that guarantees strong consistency while allowing read queries and write transactions to execute in parallel.
+Caching complicated graph query traversal results has the potential to give a significant performance increase,
+but caching in a way that is flexible yet maitains consistency prevents a basic cache implementation.
+
+%Traditional software caching mechianisms would not work well in a graph that changes It supports an evolving graph
+%It is built for a dynamically changing graph, where user specified queries can run on a consistent snapshot of the graph while it is updating.
+In this paper, we propose a system and interface for caching graph query results where cached values can be re-interpreted with the context of relevant changes that have happened to the graph between requests.
+This forces query creators to check if a cached value is still valid, but allows them to implement more complex functionality such as incrementally re-computing a result from this supplied context.
+Implemented in weaver, we our system halved the time to complete certain workloads on a real world graph. % XXX check
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+Graphs have become ubiquitous in the Information Age. 
+`Big data' often comes in the form of online social and web networks, but can
+also be graph-structured in more diverse settings like biological protein
+interaction networks and electric power grids.
+Analyzing the structure of how individual data points connect with each other can lead to novel insights and a much better understanding of a dataset as a whole.
+
+Storing and interpreting a graph in a traditional relational or non-relational database can be very inefficient because of the higher degree of interdependencies within the data. Thus, a new class of systems built specifically for storing and querying graphs have been introduced within the past decade~\cite{giraph,tao,powergraph,pregel,memcache_fb,gps,trinity}.
+
+Weaver, a graph store being developed at Cornell, provides ACID transactions for a fully distributed, sharded graphstore, with high throughput and low latency.
+It utilizes fully-distributed coordinator that permits unrelated transactions to proceed in parallel while enforcing strict ordering on transactions whose data sets overlap.
+
+Though our system has high throughput potential for small operations, graph queries can often be incredibly data-intensive and high latency.
+This is because they often involve visiting a large number of nodes such as in queries like breadth first search, shortest path, and page rank.
+
+With a static graph, these results can be trivially be cached on either the server or client side. However, a small modification anywhere in the graph has the potential to invalidate this result. Because of this, other systems built for changing graphs have looked for performance improvements by caching parts of the graph on clients~\cite{titan}, but these approaches falter when strong consistency of the graph is desired.
+
+%Systems for graphs generally are either graph processing systems that are distributed and highly parallel but lack support for dynamically changing graphs or graph databases which have only weak consistency guarantees. Weaver supports strong consistency for dynamically changing graphs, thus, we wanted to build a way to cache common queries to the graph in a way that was also consistent.
+
+%    With a static graph, caching can be done on the client side. % titan does this
+%If they want the result of an identical calculation twice there is no worry for correctness or fancy caching techniques.
+%Even for dynamic graphs, no other graph database does caching of requests and usually focuses on caching parts of the graph.
+
+
+Though we wanted to keep a single, consistent view of the graph, we still saw room for caching to improve performance for queries to a dynamic graph. Usually, changes that are made between requests do not invalidate old cache values, so being able to return without re-running the full computation could greatly improve performance.
+In addition, even if a cached query result is incorrect, it is likely most of the graph structure is the same between the requests, and we saw the potential to save parts of old computations in some query types.
+
+    In this paper we propose a system to provide functionality for caching between requests to a dynamically changing graph in a way that maintains correctness and provides the opportunity for optimizations even when the cached result is no longer valid.
+A simple graph query example, ``is node $v$ reachable from node $u$", would benefit greatly from caching.
+Without caching, this request requires a breadth or depth first search of the graph.
+If we cached the path at the source for a destination node that was reachable, checking if this path still exists for a later query could potentially avoid this large search and save a significant amount of time (while maintaining correctness because we re-check the path).
+Weaver has a programming framework for developers to define their own queries on the graph, and we wanted to expose a flexible caching API that was sufficiently generic to perform well even for use cases yet to be developed.
+
+In our caching system, query can store a cached value at a node (or multiple nodes) before it returns to the client. However, with this cached value, a custom user defined class, the query must also specify a \emph{watch set} of nodes for that cached value.
+When a cached value is retrieved, it is accompanied by a list for every node in the accompanying \emph{watch set} of the changes made at that node between the time of this request and the time the cached value was calculated.
+This moves the burden of invalidating the cache to the query program at the time the cached value is retrieved, a practice we call \emph{lazy cache invalidation}.
+This implementation also allows the a query to re-compute a result from the cached value and the changes made to the \emph{watch set}, potentially skipping large portions of the computation.
+
+\section{Related work}\label{sec:related}
+% doesn't make sense in database world, so they dont have it
+To our knowledge, caching of this type has not been formally implemented in any other graph stores mainly because it is not applicable to most of the existing prominent systems. 
+Many systems today, such as Pregel~\cite{pregel}, Giraph~\cite{giraph}, GraphLab~\cite{powergraph}, and Trinity~\cite{trinity} focus on processing non-changing graphs with more restrictive and parallel query styles. For a static graph, caching the way we describe it would not be relevant. Other systems are not distributed (Neo4j~\cite{neo4j} and GraphChi~\cite{graphchi}), or do heavy client side caching of the graph (HypergraphDB~\cite{hypergraphdb}, Titan\cite{titan,titan_slides}). For both of these types, more performance will come from doing more caching for the graph itself and trying to limit disk accesses. Lastly, other systems built to handle dynamic graphs, such as systems at Facebook~\cite{tao,memcache_fb}, Cops~\cite{cops}, Eiger~\cite{eiger}, and Trinity~\cite{trinity} have weaker consistency models than Weaver with the hopes of providing greater performance and availability, thus, a system for caching that maintains consistency is useless overhead.
+\section{System Design}\label{sec:design}
+The basic model of how graphs are stored in Weaver motivates the design of our traversal caching system. Weaver stores a directed graph in memory. Nodes are a class that contains edges and possibly other user supplied key value pairs (such as ``name", ``Greg"). With every node, edge, and key/value pair is a creation and deletion time-stamp.
+As the graph is stored across multiple servers, edges specify the id of the machine that neighbor node is stored on as well as the memory location of the node on that machine.
+Read and write operations follow timestamps to give a linearizable system. A node/edge creation operation creates an object with a corresponding create time-stamp, and a deletion operation does not delete the object itself but instead just sets the delete time-stamp for that component. A read query will be given a time-stamp as well, and it examines these create and delete timestamps of the components it reads, only exposing those nodes and edges that were created after and not deleted before the time-stamp of the request. 'Deleted components' can be garbage collected once it is sure all subsequent reads in the system will occur chronologically after their delete timestamps.
+
+\subsection{Query model}
+Weaver supports a general purpose graph query interface that enables developers to implement their own traversals on large scale graphs.
+Users define \emph{node programs}: code snippets that execute 'from the point of view of a vertex.' A node program has access only to the state it is given and the state stored on that node and with that information decides which nodes to send to next and what to send them. Programming from this perspective allows a high level of parallelism in requests to a system, as many of these snippets can run concurrently on different nodes. Node programs formally implement the interface shown in \srcref{reach_prog}.
+A node program query is assigned a time-stamp before starting, and this time-stamp defines the consistent snapshot of the graph the query will see.
+A node program may read all information associated with the node within that snapshot, such as its properties
+and its list of outgoing edges, via the node object which is passed
+as an argument. For example, in a BFS traversal program, the node program would traverse the
+node's edges by enumerating them through its node argument.
+The 'vertex-centric' programming model of node programs is similar to, and is inspired
+by, the established graph processing systems like GraphLab~\cite{powergraph} and
+Pregel~\cite{pregel}. 
+\insertsrc{src/reach_program.h}{Vertex-oriented program interface in Weaver}{reach_prog}
+
+\subsection{Caching interface}
+Many user defined node-programs can involve large portions of the graph, thus caching could greatly impact the runtime of workloads that run queries multiple times while changing the graph. If the graph does change, however, it is easy for cached values to become invalid. Graph structured queries differ in the rules for data invalidation. For example, when caching that one node is reachable from another, adding a node or edge to the graph can't change a positive result. On the other hand, when caching a shortest path calculation between two nodes, adding a node or edge could create a new, shorter path. With the flexibility of the node programming interface, there wouldn't be a way to automatically invalidate cached values based on modifications to the graph that wasn't overly pessimistic in it's cache invalidation.
+
+    In our system, we have the people who write queries for the graph define the rules for how a cache should be invalidated. We never proactively invalidate a cached value because we don't know how often a cached value will be used, and we want to avoid adding checks to operations that update the graph. Instead, we give a node program the information it would need to invalidate a cached value when we retrieve it. What is relevant to invalidating a cached value is what has changed in the graph since the cached value was stored. However, not all changes to a graph are important; presumably only changes to a subset of the graph can cause invalidation. In addition, cache invalidations for graphs may not be all-or-nothing. It is possible that the result of a user query is only slightly affected by a few changes to the graph and could be calculated with less work than starting over by using this caching context.
+\insertsrc{src/cache_response.h}{Proposed caching interface}{caching}
+The caching interface we chose to achieve these goals is shown in \srcref{caching}. To facilitate user-defined invalidation, we have them record a \emph{watch set} of nodes with every cached value. These nodes define the scope of the context that future lookups will be able to examine to determine if a cached value is still valid. 
+In addition, the user defines keys (possibly one) that will lookup this cache value when storing it, this is useful for cached values that can answer multiple different queries. 
+Essentially, cache values are indexed by the node program type, the node, and finally a user defined key. 
+\insertsrc{src/cache_response.h}{interfaces to caching classes}{cache_response}
+
+    When cached values are returned they are wrapped in a cache\_response class (see \srcref{cache_response}) which also contains the context to decide if the cached value is still valid. This context consists of the changes to the \emph{watch set} for that cached value that occurred chronologically between when the cached value was calculated and when the request fetching it occurs. If the user program decides, based on the context, that the cached value is no longer valid, they can invalidate it using the corresponding method call to the cache\_response class.
+    
+    To illustrate how this caching interface could be used, we provide two examples. The second also shows how a query result could be incrementally updated from a previous cache value and its context.
+
+\subsubsection{Reachability}
+The request ``is node $v$ reachable from node $u$" can be written as a node program that is essentially a breadth-first search. In the case of a positive result, where node $v$ is reachable from node $u$, a cached value could be recorded at every node along the path from $u$ to $v$. At node $u$, the source, we would cache the path found to the destination $v$ as the cached value and the nodes in that path would be the corresponding \emph{watch set}. The id of the destination node $v$ can be the key for the cache lookup (we could also have every node in the path be seperate a key, as all nodes in the path are reachable from the source). 
+
+    When the same request, ``is node $v$ reachable from node $u$", is performed again later, the cached value may or may not still be correct. At the source node, the reachability node program will call get\_cache(``$v$"). Because there was previously a positive response, this will return a cached value and it's context. Checking the context to see if it is still valid could be done programmatically simply by scanning the change list for each node in the path and ensuring it did not sever it's edge to the next node in the path.
+    Compiling all the changes for every node in the watch set could be time consuming, possibly involving network transfers if some of the nodes are stored on another server, but it can still save a significant amount of work. In this example above, we only have to check nodes that were on the path instead of performing another breadth-first search. In addition, the program only has to go over the changes to the \emph{watch set} that occurred after the cached value was computed, this list of changes will likely be only a fraction of the data stored at each node.
+\subsubsection{Clustering Coefficient}
+The local clustering coefficient for a node is a measure of how interconnected that node's neighbors are with each other. Formally, it is the number of edges between neighbors that exist divided by the maximum possible number of edges between those neighbors. This maximum possible number represents a clique, where all $n$ of the center's neighbors are connected to every other neighbor (thus the denominator of the calculation is $n(n-1)$). To perform the calculation originally, the node program starts at the center node and sends a list of its neighbors to every one of its neighbors. Each neighbor then compares this list to their set of neighbors and returns to the center the cardinality of the intersection of those sets. The center node sums these values and divides by $n(n-1)$ to get the clustering coefficient. Now, if we wanted to cache this value using our framework, we would record the coefficient as the cache\_value, the watch set as the center node and its neighbors, and the key could as a constant value for all requests (it is not really needed here).
+
+    When this cached result is read later it could be used by itself or updated based on the context, potentially avoiding re-calculating the value completely. Examining the changes to the \emph{watch set}, the cached value is still valid if one of the neighbors added or deleted an edge that was not also a neighbor of the center. If the center added or deleted an edge the cache value would be invalid. In the third case, if a neighbor added or deleted an edge to a node that was also a neighbor of the center, the clustering coefficient is equal to the cached coefficient plus or minus $\frac1{n(n-1)}$. 
+We believe this type of incremental updating of a cached value could significantly increase the throughput of graph stores that handle a lot of online queries. In this case, we potentially avoid exchanging neighbor sets and doing set intersections even if the local graph structure has changed in between two requests.
+
+\section{Implementation Plan}\label{sec:design}
+\subsection{Cache Backend}
+The backend for the cache will be a nested hash table that is keyed by request type, node, and the key of the cached value. When a node program is run, functions to set and get a cache value will be passed in as arguments to the node program (in addition to the reference to the node itself, the program state at that node, and the parameters passed by the previous caller as described in \srcref{reach_prog}). These getters and setters will be wrappers for functions that include looking up the request type and node in the nested hash table. This allows a simple interface to be presented to the node program writer while the underlying system does extra. This can be done in C++ using std::bind, which is essentially a partial function application.
+\subsection{Message Batching}
+To reduce network communication, message batching will be used when fetching the context for a cached value from the nodes in the \emph{watched set}.
+When compiling the context for the watch set we must query each node in the watch set for the changes that have happened in the time between the cached request and the current one. We will send one message to each relevant server with the nodes on that server we would like the changes in this time range for, and it will compile the results and send them back in a batch as well. Weaver message batches already when running node programs, where parallel requests crossing to another machine are grouped together to minimize the overhead of network communication.
+\subsection{Time Range Slicing}
+This caching implementation extensively uses time range queries for node information, and the way we store this data should be re-designed to make these queries efficient. Though we originally stored edges and properties in their own re-sizable arrays, this structure makes figuring out what happened between two timestamps difficult. Instead, we plan to implement the all modifications to a node, including adding or deleting edges or properties or deleting the node itself, to be stored in an append only log for that node. An append-only log is possible because our system ensures strongly consistent transactions and thus we know that all updates to a single node will arrive in chronological order. Finding all changes made after a given timestamp to this log is now a simple binary search on the timestamps of the log. Previous data-structures for only edges or only key/value properties can be replaced by filtering iterators over this log without much overhead. We also hope that having all but the head of the log immutable will make it possible to have reads be lock-free, though extra logic would need to be added to resize and compact these logs as the graph mutates.
+\subsection{Other applications}
+We would also like to design and implement one or two other applications for node programs with caching in our system. A top contender currently would be a program that would do a basic friend recommendation algorithm which would rank the two-hop neighbors of a given node by the number of neighbors they share with it. In a social network, the top of this list would contain the people with the most mutual friends with the individual we wanted recommendations for (that weren't already friends with that user). we think this application could have a clear use case for a dynamic graph and caching. It makes sense that it would be better to re-compute recommendations every time a user logs in instead of doing it offline every few hours. Doing these computations online make sure recommendations do not lag behind changes to the social network and could allow someone who has just joined the social network to establish themselves in it faster. It is also a use case where results caching seems logical, as often the results will be unchanged or only slightly different from a previous calculation.
+\section{Evaluation Plan}\label{sec:design}
+A good evaluation of our caching system will mainly consist of comparisons of throughput and latency with and without caching. We hope to have caching examples to benchmark for reachability and clustering coefficient, two node programs already implemented in our system. Unfortunately, there is a plethora of variables to deal with when benchmarking graph databases. We could vary the type of graph, the size of the graph, how the graph is mutating over time, the pattern of requests made, and the number of servers the system is running on. To focus on cache performance, we would like to keep the system fairly small, maybe 4-8 nodes. This number is also close to how many machines on the systems cluster would be available for testing. we would like to work with both real-world (like a Twitter subset) and synthetic graphs (like $G_{n,p}$ random graphs). The sizes of these graphs will probably be chosen based on what is available for the real-world graphs and what can be benchmarked in a reasonable amount of time for generated graphs. One point of difficulty is how to test incremental caching techniques on evolving graphs. We will have to look around for datasets that record graph structure but also include timestamps so the evolution of the graph could be replayed in our system. For synthetic graphs, we will look for models for graph evolution, but they may not exist yet.
+
+\bibliographystyle{plain}
+\footnotesize
+\bibliography{bib_nsdi}
+\end{document}
