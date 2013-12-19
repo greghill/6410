@@ -121,7 +121,6 @@ In these cases, a more simple timer invalidated cache would likely be faster tha
 In order to give context to the caching system we implemented, we dedicate a section to give further explanation to the architecture of Weaver and it's query framework.
 \footnote{Some text and figures in \secref{wdesign} have been taken from \emph{Weaver: A High-Performance, Linearizable, Distributed Graph Store} -- an unpublished submission to NSDI `14 by Ayush Dubey, Robert Escriva, Gregory D. Hill, and Emin G\"un Sirer}
 
-
 Weaver partitions the graph data across a set of 
     {\em shard servers} and employs a distributed {\em timestamp coordinator} to
     organize and coordinate their activities.
@@ -137,7 +136,7 @@ An auxiliary key-value store~\cite{warp} stores the mapping from nodes to home s
     transactions.
 \figref{arch} illustrates the general system architecture and organization.
 
-\insertfig{0.98}{fig/weaver_arch}{Weaver system architecture}{arch}
+\insertfig{1}{fig/weaver_arch}{Weaver system architecture}{arch}
 
 \subsection{Data and Query Model}
 
@@ -291,31 +290,13 @@ It is possible that the result of a user query is only slightly affected by a fe
 %If the graph does change, however, it is easy for cached values to become invalid. Graph structured queries differ in the rules for data invalidation. For example, when caching that one node is reachable from another, adding a node or edge to the graph can't change a positive result. On the other hand, when caching a shortest path calculation between two nodes, adding a node or edge could create a new, shorter path. With the flexibility of the node programming interface, there wouldn't be a way to automatically invalidate cached values based on modifications to the graph that wasn't overly pessimistic in it's cache invalidation.
 
 \insertsrc{src/cache_response.h}{Proposed caching interface}{caching}
-The caching interface we chose to achieve these goals is shown in \srcref{caching}. To facilitate user-defined invalidation, we have them record a \emph{watch set} of nodes with every cached value. These nodes define the scope of the context that future lookups will be able to examine to determine if a cached value is still valid. 
+The caching interface we chose to achieve these goals is shown in \srcref{cache_reach_prog}. To facilitate user-defined invalidation, we have them record a \emph{watch set} of nodes with every cached value. These nodes define the scope of the context that future lookups will be able to examine to determine if a cached value is still valid. 
 In addition, the user defines keys (possibly one) that will lookup this cache value when storing it, this is useful for cached values that can answer multiple different queries. 
 Essentially, cache values are indexed by the node program type, the node, and finally a user defined key. 
-\insertsrc{src/cache_response.h}{interfaces to caching classes}{cache_response}
 
     When cached values are returned they are wrapped in a cache\_response class (see \srcref{cache_response}) which also contains the context to decide if the cached value is still valid. This context consists of the changes to the \emph{watch set} for that cached value that occurred chronologically between when the cached value was calculated and when the request fetching it occurs. If the user program decides, based on the context, that the cached value is no longer valid, they can invalidate it using the corresponding method call to the cache\_response class.
     
-    To illustrate how this caching interface could be used, we provide two examples. The second also shows how a query result could be incrementally updated from a previous cache value and its context.
-
-\subsubsection{Reachability}
-The request ``is node $v$ reachable from node $u$" can be written as a node program that is essentially a breadth-first search. In the case of a positive result, where node $v$ is reachable from node $u$, a cached value could be recorded at every node along the path from $u$ to $v$. At node $u$, the source, we would cache the path found to the destination $v$ as the cached value and the nodes in that path would be the corresponding \emph{watch set}. The id of the destination node $v$ can be the key for the cache lookup (we could also have every node in the path be separate a key, as all nodes in the path are reachable from the source). 
-
-    When the same request, ``is node $v$ reachable from node $u$", is performed again later, the cached value may or may not still be correct. At the source node, the reachability node program will call get\_cache(``$v$"). Because there was previously a positive response, this will return a cached value and it's context. Checking the context to see if it is still valid could be done programmatically simply by scanning the change list for each node in the path and ensuring it did not sever it's edge to the next node in the path.
-    Compiling all the changes for every node in the watch set could be time consuming, possibly involving network transfers if some of the nodes are stored on another server, but it can still save a significant amount of work. In this example above, we only have to check nodes that were on the path instead of performing another breadth-first search. In addition, the program only has to go over the changes to the \emph{watch set} that occurred after the cached value was computed, this list of changes will likely be only a fraction of the data stored at each node.
-
-\subsubsection{Clustering Coefficient}\label{sec:clustering}
-The local clustering coefficient for a node is a measure of how interconnected that node's neighbors are with each other. Formally, it is the number of edges between neighbors that exist divided by the maximum possible number of edges between those neighbors ($k(k-1)$, where $k$ is the number of neighbors).
-The maximum possible coefficient of $1$ represents a clique, where all $n$ of the center node's neighbors are connected to every other neighbor.
-To perform the calculation originally, the node program starts at the center node and sends a list of its neighbors to every one of its neighbors.
-Each neighbor then compares this list to their set of neighbors and returns to the center the cardinality of the intersection of those sets.
-The center node sums these values and divides by $n(n-1)$ to get the clustering coefficient. Now, if we wanted to cache this value using our framework, we would record the coefficient as the cache\_value, the watch set as the center node and its neighbors, and the key could as a constant value for all requests (it is not really needed here).
-
-    When this cached result is read later it could be used by itself or updated based on the context, potentially avoiding re-calculating the value completely. Examining the changes to the \emph{watch set}, the cached value is still valid if one of the neighbors added or deleted an edge that was not also a neighbor of the center. If the center added or deleted an edge the cache value would be invalid. In the third case, if a neighbor added or deleted an edge to a node that was also a neighbor of the center, the clustering coefficient is equal to the cached coefficient plus or minus $\frac1{n(n-1)}$. 
-We believe this type of incremental updating of a cached value could significantly increase the throughput of graph stores that handle a lot of online queries. In this case, we potentially avoid exchanging neighbor sets and doing set intersections even if the local graph structure has changed in between two requests.
-
+    For two examples of how this caching interface could can used, reference \secref{cached_progs}. The second example also shows how a query result could be incrementally updated from a previous cache value and its context.
 \section{Implementation}\label{sec:design}
 \subsection{Cache Backend}
 The backend for the cache is implemented a hash table for each node that is keyed by request type and the key of the cached value. A cache lookup is performed by setting a boolean and desired key to lookup on a node in the node program parameters that are passed to it.
@@ -323,38 +304,52 @@ When this flag has been set, the shard attempts to fetch the cache value, includ
 \subsection{Context Fetching}
 Every cache value is stored with the vector timestamp for when it was created and the user defined watch set supplied when the value was set. Fetching this context commonly involves reading data that exists on another shard. Thus, all the requisite data for running the node-program that will receive a cache response with context must be saved on the heap while all the nodes of the watch set are queried to determine their node\_cache\_context.
 This data is fetched by sending concurrent batched queries to the shards containing the nodes in the watch set. We find this context fetching to be faster than running a node program itself. To get the context for each node we iterate through it's contents, comparing the timestamps of edges and properties on that node with the timestamp of the cached value and the timestamp of the request fetching it. %These batched queries also have less network overhead than running node programs.
-%\subsection{Message Batching}
-%To reduce network communication, message batching will be used when fetching the context for a cached value from the nodes in the \emph{watched set}.
-%When compiling the context for the watch set we must query each node in the watch set for the changes that have happened in the time between the cached request and the current one. We will send one message to each relevant server with the nodes on that server we would like the changes in this time range for, and it will compile the results and send them back in a batch as well. Weaver message batches already when running node programs, where parallel requests crossing to another machine are grouped together to minimize the overhead of network communication.
-%\subsection{Time Range Slicing}
-%This caching implementation extensively uses time range queries for node information, and the way we store this data should be re-designed to make these queries efficient. Though we originally stored edges and properties in their own re-sizable arrays, this structure makes figuring out what happened between two timestamps difficult. Instead, we plan to implement the all modifications to a node, including adding or deleting edges or properties or deleting the node itself, to be stored in an append only log for that node. An append-only log is possible because our system ensures strongly consistent transactions and thus we know that all updates to a single node will arrive in chronological order. Finding all changes made after a given timestamp to this log is now a simple binary search on the timestamps of the log. Previous data-structures for only edges or only key/value properties can be replaced by filtering iterators over this log without much overhead. We also hope that having all but the head of the log immutable will make it possible to have reads be lock-free, though extra logic would need to be added to resize and compact these logs as the graph mutates.
-\subsection{Cached Node Programs}
+\subsection{Cached Node Programs}\label{sec:cached_progs}
 We have implemented our query caching in both the reachability and clustering coefficient node programs.
 
-For reachability, we only cache positive results. This is done by backtracing the path found from the source to the destination and adding a cached value for the destination for each node along the path. The watch\_set for these cache values is the sub-path from that location in the graph to the destination. Reachability programs check for cached values at every node they go to. They check the context by making sure the path was not broken. If it was, the cached value is invalidated and the request continues without caching.
+For reachability, we only cache positive results. This is done by backtracing the path found from the source to the destination and adding a cached value for the destination for each node along the path. The watch\_set for these cache values is the sub-path from that location in the graph to the destination. 
 
-For clustering, we cache the numerator of the coefficient calculation at the center node for the request. The watch set is that center node and all its neighbors. The cached value is incrementally updated as described in \secref{clustering} and otherwise invalidated.
+\subsubsection{Reachability}
+The request ``is node $v$ reachable from node $u$" can be written as a node program that is essentially a breadth-first search.
+In the case of a positive result, the path taken to get to the destination is back-tracked, and at every node along this path a cache entry is added where the cache key is the destination node.
+It is also possible to add a cache entry for every node farther down the path, but we decided against this for our implementation.
+The watch\_set for one of these cache entries is the sub-path from that location in the graph to the destination. Reachability programs check for cached values at every node they touch. If it was, the cached value is invalidated and the request continues for that node without caching.
+
+    If an identical request, ``is node $v$ reachable from node $u$", is performed again later, the cached value may or may not still be correct. Starting a reachability request from the source node and passing in params to do a cache lookup for that destination, Weaver would create the appropriate cache\_reponse and the reachability node program would be started with it as an argument.
+    Checking the context in the cache\_response to see if it is still valid is accomplished by iterating through the changes to the path that the context represents and making sure the path had not been broken.
+    Compiling all the changes for every node in the watch set could is computationally significant and possibly involves network transfers if some of the nodes are stored on another server, but it can save a significant amount of work. In this example above, we only have to check nodes that were on the path instead of performing another breadth-first search. In addition, the program only has to go over the changes to the \emph{watch set} that occurred after the cached value was computed, this list of changes will likely be only a fraction of the data stored at each node.
+\subsubsection{Clustering Coefficient}\label{sec:clustering}
+The local clustering coefficient for a node is a measure of how interconnected that node's neighbors are with each other.
+Formally, it is the number of edges between neighbors that exist divided by the maximum possible number of edges between those neighbors (which is $k\cdot(k-1)$, where $k$ is the number of neighbors).
+The maximum possible coefficient of $1$ represents a clique, where all $k$ of the center node's neighbors are connected to every other neighbor.
+To perform the calculation normally, a node program starts at the center node and sends a list of its neighbors to every one of its neighbors.
+Each neighbor then compares this list to their own set of neighbors and returns to the center the cardinality of the intersection of those sets.
+The center node sums these values and divides by $k(k-1)$ to get the clustering coefficient. To cache this value using our framework, we record the coefficient as the cache\_value, the watch set as the center node and its neighbors (the key doesn't really matter here, and could be constant).
+
+    When this cached result is read again it could be used by itself or updated based on the context, potentially avoiding re-calculating the value completely. Examining the changes to the \emph{watch set}, the cached value is still valid if one of the neighbors added or deleted an edge that was not also a neighbor of the center. If the center added or deleted an edge the cache value would be invalid. In the third case, if a neighbor added or deleted an edge to a node that was also a neighbor of the center, the clustering coefficient is equal to the cached coefficient plus or minus $\frac1{n(n-1)}$. 
 \section{Evaluation}\label{sec:eval}
 \subsection{Local Synthetic Benchmarks}
-\insertfig{0.98}{fig/bench2}{Local machine synthetic benchmark}{local_bench}
-The system was first run locally with two shards and one vector timestamp server running on a Thinkpad X1 Carbon Laptop. A reachability test of varying size was created where a line of nodes created and partitioned alternating to each of the two shard instances. One reachability test was run from each node in the line with a destination of the end of the line. Then, an edge was cut half way down the line, so cached values before that cut would be invalid.
-Then, the same reachability tests were run from each node in the line; this time with only have reaching the destination. This setup was very advantageous for the caching system, as reachability requests without caching would have to bounce between shards constantly to breadth first search down the line while checking a cache context knew all nodes it wanted to fetch the context of for each shard. Relative performance is shown in \figref{local_bench}. For a graph of 1000 nodes, caching was almost $8\times$ faster.
+\insertfig{1.1}{fig/bench2}{Local machine synthetic benchmark}{local_bench}
+The system was first benchmarked locally with two shards and one vector timestamp server running on a 2012 Thinkpad X1 Carbon Laptop running Xubuntu 13.10. A reachability test of varying size was ran that consisted of a line of nodes created and partitioned alternating down the line to each of the two shard instances.
+One reachability test was run from each node in the line with the destination being the end of the line. After that, an edge was cut half way down the line, so cached values before that cut would be invalid. Then, the same reachability tests were run again from each node in the line, this time with only half reaching the destination. This setup was very advantageous for the caching system, as reachability requests without caching would have to bounce between shards constantly in the breadth first search down the line, while a cache context check knew all nodes it wanted to read ahead of time for each shard. Relative performance is shown in \figref{local_bench} of not caching was compared to the latency to complete the operation with caching as a baseline of 1. For a graph of 1000 nodes, caching was almost $8\times$ faster.
+
 %A good evaluation of our caching system will mainly consist of comparisons of throughput and latency with and without caching. We hope to have caching examples to benchmark for reachability and clustering coefficient, two node programs already implemented in our system. Unfortunately, there is a plethora of variables to deal with when benchmarking graph databases. We could vary the type of graph, the size of the graph, how the graph is mutating over time, the pattern of requests made, and the number of servers the system is running on. To focus on cache performance, we would like to keep the system fairly small, maybe 4-8 nodes. This number is also close to how many machines on the systems cluster would be available for testing. we would like to work with both real-world (like a Twitter subset) and synthetic graphs (like $G_{n,p}$ random graphs). The sizes of these graphs will probably be chosen based on what is available for the real-world graphs and what can be benchmarked in a reasonable amount of time for generated graphs. One point of difficulty is how to test incremental caching techniques on evolving graphs. We will have to look around for datasets that record graph structure but also include timestamps so the evolution of the graph could be replayed in our system. For synthetic graphs, we will look for models for graph evolution, but they may not exist yet.
 
 \subsection{Distributed Real Benchmarks}
-We performed reachability experiments on a distributed cluster instance of Weaver using the Twitter social circles data~\cite{twitter_data} from the SNAP library.
-This dataset presents a real-world social network comprising of $\sim 82,000$ nodes
-and $\sim 1.8$ million edges.
-
-On this graph, we picked a random destination and performed 50 reachability requests from random nodes to that destination for each run. \figref{huh} shows the time it took to complete all 50 requests for diffenent random selections of destination node. Caching performed better every time, in one instance being almost $10\times$ faster.
-
+We performed reachability experiments on a distributed cluster instance of Weaver using Twitter social circles data~\cite{twitter_data} from the Stanford SNAP library~\cite{snap}.
+This dataset presents a real-world social network comprising of $\sim 82,000$ nodes and $\sim 1.8$ million edges.
 We performed these experiments on our cluster consisting of ten
     servers, each of which is equipped with two Intel Xeon 2.5 GHz E5420 processors, Debian 3.2.46 operating system, 16 GB of RAM, 500 GB SATA 3.0 Gbit/s hard disks, and Gigabit Ethernet.
 We deployed 1 timestamp server and 8 shard servers, in addition to the EOS.
-\insertfig{0.98}{fig/bench1}{Distributed reachability benchmark on Twitter graph}{huh}
+
+On this graph, we picked a random destination and performed 50 reachability requests from random nodes to that destination for each run. \figref{huh} shows the time it took to complete all 50 requests for diffenent random selections of destination node. Caching performed better every time, in one instance being almost $10\times$ faster.
+
+For a reapeated destination the advantage of caching is especially significant, even from different sources. This is because as cache values are left behind, any breadth first search only has to touch one node on a previous successful path to retrieve that cached value. Once it does this, it records new cached values on the path it just took. Thus, if no entries are invalidated, a cache entry for a given destination is stored at the union of all paths previously found to it.
+
+\insertfig{1.1}{fig/bench1}{Distributed reachability benchmark on Twitter graph}{huh}
 
 \section{Conclusion and Future Directions}\label{sec:conclusion}
-We have built and demonstrated a powerful caching system that can half computation time on real world graphs while allowing users to maintain ACID consistency for their queries.
+We have built and demonstrated a powerful caching system that can halve computation time on real world graphs while allowing users to maintain ACID consistency for their queries.
 
 Moving forward, we would also like to design and implement one or two other applications for node programs with caching in our system.
 A top contender currently would be a program that would do a basic friend recommendation algorithm which would rank the two-hop neighbors of a given node by the number of neighbors they share with it.
