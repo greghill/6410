@@ -46,7 +46,7 @@
 \newcommand{\insertsrc}[3]{\begin{figure}\centering\lstinputlisting[frame=single]{#1}\caption{#2}\label{fig:#3}\end{figure}}
 %\newcommand{\insertsrc}[3]{\begin{figure}\centering\hline\lstinputlisting{#1}\hline\caption{#2}\label{fig:#3}\end{figure}}
 
-\title{Traversal Caching in a Distributed Graph Store}
+\title{Consistent Caching in a Distributed Graph Store}
 
 \author{\rm Gregory D. Hill \qquad
         \\Cornell University}
@@ -59,11 +59,11 @@ Much of todays `Big Data' is graph structured, and multiple companies and univer
 %With them, graph storage systems optimized for their highly inter-connected structure.
 Weaver is a distributed graph store being developed at Cornell that guarantees strong consistency while allowing read queries and write transactions to execute in parallel.
 Caching complicated graph query traversal results has the potential to give a significant performance increase,
-but caching in a way that is flexible yet maitains consistency prevents a basic cache implementation.
+but caching in a way that is flexible yet maintains consistency prevents a basic cache implementation.
 
 %Traditional software caching mechianisms would not work well in a graph that changes It supports an evolving graph
 %It is built for a dynamically changing graph, where user specified queries can run on a consistent snapshot of the graph while it is updating.
-In this paper, we propose a system and interface for caching graph query results where cached values can be re-interpreted with the context of relevant changes that have happened to the graph between requests.
+In this paper, we propose a system and interface for caching graph query results in software where cached values can be re-interpreted with the context of relevant changes that have happened to the graph between requests.
 This forces query creators to check if a cached value is still valid, but allows them to implement more complex functionality such as incrementally re-computing a result from this supplied context.
 Implemented in weaver, we our system halved the time to complete certain workloads on a real world graph. % XXX check
 \end{abstract}
@@ -107,17 +107,167 @@ This moves the burden of invalidating the cache to the query program at the time
 This implementation also allows the a query to re-compute a result from the cached value and the changes made to the \emph{watch set}, potentially skipping large portions of the computation.
 
 \section{Related work}\label{sec:related}
+Graph stores that store static graphs or that are eventually consistent can more effectively cache using more basic techniques.
+%/Our system aims to provide stronger guarantees than other graph stores 
 % doesn't make sense in database world, so they dont have it
-To our knowledge, caching of this type has not been formally implemented in any other graph stores mainly because it is not applicable to most of the existing prominent systems. 
-Many systems today, such as Pregel~\cite{pregel}, Giraph~\cite{giraph}, GraphLab~\cite{powergraph}, and Trinity~\cite{trinity} focus on processing non-changing graphs with more restrictive and parallel query styles. For a static graph, caching the way we describe it would not be relevant. Other systems are not distributed (Neo4j~\cite{neo4j} and GraphChi~\cite{graphchi}), or do heavy client side caching of the graph (HypergraphDB~\cite{hypergraphdb}, Titan\cite{titan,titan_slides}). For both of these types, more performance will come from doing more caching for the graph itself and trying to limit disk accesses. Lastly, other systems built to handle dynamic graphs, such as systems at Facebook~\cite{tao,memcache_fb}, Cops~\cite{cops}, Eiger~\cite{eiger}, and Trinity~\cite{trinity} have weaker consistency models than Weaver with the hopes of providing greater performance and availability, thus, a system for caching that maintains consistency is useless overhead.
-\section{System Design}\label{sec:design}
+%To our knowledge, caching of this type has not been formally implemented in any other graph stores mainly because it is not applicable to most of the existing prominent systems. 
+Static graph systems such as Pregel~\cite{pregel}, Giraph~\cite{giraph}, GraphLab~\cite{powergraph}, and Trinity~\cite{trinity} do not cache queries and instead focus on delivering high performance by processing the graph using more restrictive and parallel query styles. % For a static graph, caching the way we describe it would not be relevant.
+Other systems are not distributed (Neo4j~\cite{neo4j} and GraphChi~\cite{graphchi}), or do heavy client side caching of the graph itself (HypergraphDB~\cite{hypergraphdb}, Titan\cite{titan,titan_slides}).
+For both of these types, more performance will come from doing more caching for the graph itself and trying to limit disk accesses or network transfers.
+Other systems built to handle dynamic graphs, such as systems at Facebook~\cite{tao,memcache_fb}, Cops~\cite{cops}, Eiger~\cite{eiger}, and Trinity~\cite{trinity} have weaker consistency models than Weaver with the hopes of providing greater performance and availability.
+In these cases, a more simple timer invalidated cache would likely be faster then our heavyweight, consistent approach.
+
+\section{Weaver Design}\label{sec:wdesign}
+In order to give context to the caching system we implemented, we dedicate a section to give further explanation to the architechture of Weaver and it's query framework.
+\footnote{Some text and figures in \secref{wdesign} have been taken from \emph{Weaver: A High-Performance, Linearizable, Distributed Graph Store} -- an unpublished submission to NSDI `14 by Ayush Dubey, Robert Escriva, Gregory D. Hill, and Emin G\"un Sirer}
+
+
+Weaver partitions the graph data across a set of 
+    {\em shard servers} and employs a distributed {\em timestamp coordinator} to
+    organize and coordinate their activities.
+Shard servers house different partitions of the graph, which are stored
+    natively as nodes and their associated outgoing edges. Each node is 
+    assigned to a designated shard server, known as its {\em home shard}, 
+    and optionally replicated to a set of replicas.
+Clients send all operations to one of the timestamp servers, which tag each request with ordering-related
+    metadata and forward on to the shard-servers that hold the corresponding
+    nodes and edges of the graph. 
+An auxiliary key-value store~\cite{warp} stores the mapping from nodes to home shards,
+    timestamp servers query and update the mapping as they server client
+    transactions.
+\figref{arch} illustrates the general system architecture and organization.
+
+\insertfig{0.98}{fig/weaver_arch}{Weaver system architecture}{arch}
+
+\subsection{Data and Query Model}
+
+Weaver's architecture supports a general directed graph, consisting of a set of
+    nodes (vertices) with directed edges between them.
+Node and edges may be labelled with arbitrary named properties, effectively
+    creating multiple logical graphs.
+For example, an edge $(u,v)$ may have both ``weight=3.0'' and ``color=red'' properties,
+    while another edge $(v,w)$ may have just the ``color=blue'' property.
+Queries may take the properties of edges and vertices into account when
+    performing traversal. For instance, a query may seek to discover all 
+neighbors of node $u$ that are reachable through red edges.
+
+Weaver supports a general purpose graph query interface, which enables developers to flexibly traverse large scale graphs.
+Queries in weaver are defined as {\em node programs}, code snippets written by Weaver users.
+Before the addition of caching, node programs implemented the interface shown in \srcref{reach_prog}.
+
+A node program may read all information associated with the node, such as its properties
+    and its list of outgoing edges, via the node object which is passed
+    as an argument. For example, in a BFS traversal program, the node program would traverse the
+    node's edges by enumerating them through its node argument.
+A node program may also create and modify per-request state in each node. For instance,
+    BFS traversal may store the number of pending replies from a node's neighbors within the
+    node itself. It is the programmer's responsibility to manage this state correctly to achieve
+    the node program's objectives. This flexibility enables developers to write node programs that 
+    implement a wide array of graph algorithms.
+Node programs execute in a distributed fashion on the home shards of the nodes on which
+    they operate. A node program can start at any set of nodes and spawn child node programs
+    on any other set of nodes, typically neighbors of the starting set, through the node 
+    program API. 
+Weaver ensures that the per-request state is eventually
+    garbage collected after the node program has returned to the client.
+The overall structure of this API is overall very similar to, and is inspired
+by, the established graph processing systems like GraphLab~\cite{powergraph} and
+Pregel~\cite{pregel}.
+Our contributions for a vertex-centric graph query API are the ability to perform these requests on an evolving graph and the ability to utilize request duration state.
+
+\insertsrc{src/write_api.h}{Update operations in Weaver}{write_api}
+\insertsrc{src/reach_program.h}{Node program program interface in Weaver before caching}{reach_prog}
+
+Weaver guarantees that every node program sees a consistent snapshot of the graph, even as it traverses an indeterminate number of nodes and edges across multiple shard servers.
+How we maintain this ACID consistency is described in the remainder of this section.
+
+\subsection{Graph Consistency}
+In a na\"ive design, ACID transactions could be supported easily by a single server that 
+    assigns a unique ID drawn from a strictly increasing counter to each
+    transaction. Each graph node and edge would be keep track of a creation time
+    copied from the ID of the transaction that created that graph element. Deleted
+    nodes and edges would turn into tombstones marked with the deletion time.
+    Shard servers executing a transaction $A$ with timestamp $\tau_A$ would 
+    make node and edge data available only if the $tau_A$ was between the creation
+    and deletion times of that graph element. 
+Such a hypothetical scheme would totally order all transactions and provide a snapshot, 
+    but would come with a high cost: the global system throughput would be bottlenecked by the
+    throughput of a single server.
+
+Weaver uses a scalable ordering protocol to consistently order transactions
+    as they are applied at different shard servers.
+The ordering protocol uses double vector
+    clocks, which are assigned to each request by the timestamp server that
+    receives the request.
+
+The first vector clock, which we refer to as \emph{vector timestamp}, reflects
+    a count of requests received by each timestamper.
+The timestampers share their local counters with each other using a gossip
+    protocol, and thus each timestamper has a local copy of the vector clock.
+Upon receiving a transaction from a client, the vector timestamper
+    increments its local counter and assigns the entire vector clock to the
+    transaction, thereby establishing a \emph{partial order} across timestamps
+    generated by different vector timestamper servers.
+This operation is entirely local and requires no communication on the critical path 
+    to generate the vector clock.
+
+The second vector clock, which we call the \emph{queue timestamp}, makes it
+    possible for the shards to know \emph{when} to apply a particular write
+    transaction.
+Consider a simple system with one timestamper and two shard servers, $A$ and
+$B$.  If the timestamper were to tag operation an operation with vector
+timestamp 1 and forward it to $A$ and subsequently tag operation an operation
+with vector timestamp 2 and forward it to $B$, then $B$ would lack sufficient
+information to decide when to apply the operation 2.  Under this hypothetical
+scenario, $B$ would be unable to discern the case where operation 2 was its
+first operation from the case where operation was destined for $B$ as well, but
+was delayed in transit.
+To this end, the queue timestamp indicates the number of transactions that
+    a timestamper has forwarded to each shard server.
+Thus, each shard server maintains a priority queue for each timestamper,
+    applying operations in sequential order according to the queue timestamp.
+
+The final component of our coordinator is an event ordering service (EOS) that
+    resolves conflicting vector timestamps when they are ambiguous.
+The event ordering service is necessary to obtain a precise total order because
+    vector timestamps establish only a partial order between different
+    operations.
+It achieves this by maintaining a directed-acyclic-graph (DAG),
+wherein each vertex represents a vector clock, and each edge represents the
+happens-before relationship between the two vector clocks.
+
+Most importantly, the event ordering service need only be queried when
+    the standard vector clock comparison method does not yield a conclusive
+    answer for the order of transactions at the head of each priority queue.
+Because the timestampers continually gossip amongst themselves to share
+    their vector timestamps, the EOS is only queried for a small percentage of
+    the total operations, and does not represent a scalability bottleneck.
+
+Transactions may abort in the case that two concurrent transactions attempt
+    to delete the same node or edge.
+The transactions which triggers an update to the node map first would succeed,
+    and all subsequent transactions which attempt to delete the same graph
+    object would be aborted by the timestamper.
+
+For read-only node programs, the shard servers effectively take a snapshot
+    of the graph on which the program will operate.
+Shard servers efficiently maintain multiple snapshots by embedding timestamp
+    information for each node and edge within the graph structure itself,
+    retaining old versions until they can be garbage collected.
+Each snapshot is maintained for the entire duration of the query, so that the
+    traversal may freely cross shard server boundaries while operating on
+    a consistent snapshot of the graph.
+
+Dubey et al described the subtle aspects of our ordering mechanism in a submission to NSDI earlier this year. In that paper we also proved that our mechanism ensures a linearizable order of transactions.
+
+\section{Weaver Query Cache Design}\label{sec:cdesign}
 The basic model of how graphs are stored in Weaver motivates the design of our traversal caching system. Weaver stores a directed graph in memory. Nodes are a class that contains edges and possibly other user supplied key value pairs (such as ``name", ``Greg"). With every node, edge, and key/value pair is a creation and deletion time-stamp.
 As the graph is stored across multiple servers, edges specify the id of the machine that neighbor node is stored on as well as the memory location of the node on that machine.
 Read and write operations follow timestamps to give a linearizable system. A node/edge creation operation creates an object with a corresponding create time-stamp, and a deletion operation does not delete the object itself but instead just sets the delete time-stamp for that component. A read query will be given a time-stamp as well, and it examines these create and delete timestamps of the components it reads, only exposing those nodes and edges that were created after and not deleted before the time-stamp of the request. 'Deleted components' can be garbage collected once it is sure all subsequent reads in the system will occur chronologically after their delete timestamps.
 
 \subsection{Query model}
 Weaver supports a general purpose graph query interface that enables developers to implement their own traversals on large scale graphs.
-Users define \emph{node programs}: code snippets that execute 'from the point of view of a vertex.' A node program has access only to the state it is given and the state stored on that node and with that information decides which nodes to send to next and what to send them. Programming from this perspective allows a high level of parallelism in requests to a system, as many of these snippets can run concurrently on different nodes. Node programs formally implement the interface shown in \srcref{reach_prog}.
+Users define \emph{node programs}: code snippets that execute 'from the point of view of a vertex.' A node program has access only to the state it is given and the state stored on that node and with that information decides which nodes to send to next and what to send them. Programming from this perspective allows a high level of parallelism in requests to a system, as many of these snippets can run concurrently on different nodes. Node programs formally implement the interface shown in \srcref{cache_reach_prog}.
 A node program query is assigned a time-stamp before starting, and this time-stamp defines the consistent snapshot of the graph the query will see.
 A node program may read all information associated with the node within that snapshot, such as its properties
 and its list of outgoing edges, via the node object which is passed
@@ -126,7 +276,7 @@ node's edges by enumerating them through its node argument.
 The 'vertex-centric' programming model of node programs is similar to, and is inspired
 by, the established graph processing systems like GraphLab~\cite{powergraph} and
 Pregel~\cite{pregel}. 
-\insertsrc{src/reach_program.h}{Vertex-oriented program interface in Weaver}{reach_prog}
+\insertsrc{src/reach_program_caching.h}{Node program program interface in Weaver with caching}{cache_reach_prog}
 
 \subsection{Caching interface}
 Many user defined node-programs can involve large portions of the graph, thus caching could greatly impact the runtime of workloads that run queries multiple times while changing the graph. If the graph does change, however, it is easy for cached values to become invalid. Graph structured queries differ in the rules for data invalidation. For example, when caching that one node is reachable from another, adding a node or edge to the graph can't change a positive result. On the other hand, when caching a shortest path calculation between two nodes, adding a node or edge could create a new, shorter path. With the flexibility of the node programming interface, there wouldn't be a way to automatically invalidate cached values based on modifications to the graph that wasn't overly pessimistic in it's cache invalidation.
@@ -155,7 +305,7 @@ We believe this type of incremental updating of a cached value could significant
 
 \section{Implementation Plan}\label{sec:design}
 \subsection{Cache Backend}
-The backend for the cache will be a nested hash table that is keyed by request type, node, and the key of the cached value. When a node program is run, functions to set and get a cache value will be passed in as arguments to the node program (in addition to the reference to the node itself, the program state at that node, and the parameters passed by the previous caller as described in \srcref{reach_prog}). These getters and setters will be wrappers for functions that include looking up the request type and node in the nested hash table. This allows a simple interface to be presented to the node program writer while the underlying system does extra. This can be done in C++ using std::bind, which is essentially a partial function application.
+The backend for the cache will be a nested hash table that is keyed by request type, node, and the key of the cached value. When a node program is run, functions to set and get a cache value will be passed in as arguments to the node program (in addition to the reference to the node itself, the program state at that node, and the parameters passed by the previous caller as described in \srcref{cache_reach_prog}). These getters and setters will be wrappers for functions that include looking up the request type and node in the nested hash table. This allows a simple interface to be presented to the node program writer while the underlying system does extra. This can be done in C++ using std::bind, which is essentially a partial function application.
 \subsection{Message Batching}
 To reduce network communication, message batching will be used when fetching the context for a cached value from the nodes in the \emph{watched set}.
 When compiling the context for the watch set we must query each node in the watch set for the changes that have happened in the time between the cached request and the current one. We will send one message to each relevant server with the nodes on that server we would like the changes in this time range for, and it will compile the results and send them back in a batch as well. Weaver message batches already when running node programs, where parallel requests crossing to another machine are grouped together to minimize the overhead of network communication.
